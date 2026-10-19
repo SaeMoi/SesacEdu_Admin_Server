@@ -1,0 +1,32 @@
+export const members = [
+  {
+    id: 1,
+    name: "김새싹",
+    email: "student@example.test",
+    nickname: "새싹러",
+    role: "일반 사용자",
+    status: "정상",
+    birthday: "2000.01.01",
+    address: "서울특별시 ○○구 ○○로 123",
+  },
+  {
+    id: 2,
+    name: "이학습",
+    email: "instructor@example.test",
+    nickname: "학습강사",
+    role: "강사",
+    status: "정상",
+    birthday: "1995.05.12",
+    address: "부산광역시 ○○구 ○○로 45",
+  },
+  {
+    id: 3,
+    name: "박보안",
+    email: "member@example.test",
+    nickname: "보안학습",
+    role: "일반 사용자",
+    status: "제한",
+    birthday: "1998.08.20",
+    address: "인천광역시 ○○구 ○○로 67",
+  },
+];
