@@ -141,5 +141,8 @@ public class AdminInstructorRepository {
                 "UPDATE instructors SET rejected_at = SYSTIMESTAMP, reject_reason = ?, updated = SYSTIMESTAMP " +
                         "WHERE user_id = ?",
                 reason, userId);
+        jdbcTemplate.update(
+                "UPDATE users SET auth = 1, updated = SYSTIMESTAMP WHERE user_id = ?",
+                userId);
     }
 }
