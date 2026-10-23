@@ -8,13 +8,13 @@ import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 
 import java.sql.Timestamp;
-import java.util.ArrayList;
 import java.util.List;
 
-/**
- * 관리자 서비스 문의 JDBC. (inquiries 테이블)
- *   라우트는 /admin/qna 지만 PK가 iqid 라 실제 대상은 inquiries(서비스 문의).
- *   상태 컬럼이 없어 answered_at 유무로 pending/answered 파생.
+/*
+ * ===================== [취약 진단용 - admin/qna] JWT·필수값검증 유지 =====================
+ *  (V-SQLI/A03) keyword(제목)·offset/size·iqid·answer·adminUid 바인딩 제거 → 문자열 연결
+ *  (V-XSS/A03)  answer 미살균 저장 → 상세 조회 시 그대로 반환되어 저장형 XSS
+ * =======================================================================================
  */
 @Repository
 public class AdminQnaRepository {
@@ -33,17 +33,14 @@ public class AdminQnaRepository {
         return ts == null ? null : ts.toLocalDateTime().toLocalDate().toString();
     }
 
-    // status(파생) + keyword(제목) 필터 공통
-    //   status: done=답변완료 / none=답변없음
-    //   keyword: 공백으로 나눈 각 단어가 제목에 모두 포함되면 매칭(부분일치)
-    private static void appendFilters(StringBuilder sql, List<Object> args, String status, String keyword) {
+    // [V-SQLI] status 리터럴 + keyword 토큰 문자열 연결(제목 부분검색)
+    private static void appendFilters(StringBuilder sql, String status, String keyword) {
         if ("done".equals(status))      sql.append("AND iq.answered_at IS NOT NULL ");
         else if ("none".equals(status)) sql.append("AND iq.answered_at IS NULL ");
         if (keyword != null && !keyword.isBlank()) {
             for (String token : keyword.trim().split("\\s+")) {
                 if (token.isEmpty()) continue;
-                sql.append("AND LOWER(iq.title) LIKE '%' || LOWER(?) || '%' ");
-                args.add(token);
+                sql.append("AND LOWER(iq.title) LIKE LOWER('%" + token + "%') ");
             }
         }
     }
@@ -62,20 +59,17 @@ public class AdminQnaRepository {
         StringBuilder sql = new StringBuilder(
                 "SELECT iq.iqid, iq.title, u.nickname AS asker_name, iq.created, iq.answered_at " +
                         "FROM inquiries iq JOIN users u ON iq.user_id = u.user_id WHERE 1=1 ");
-        List<Object> args = new ArrayList<>();
-        appendFilters(sql, args, status, keyword);
-        sql.append("ORDER BY iq.created DESC NULLS LAST, iq.iqid DESC OFFSET ? ROWS FETCH NEXT ? ROWS ONLY");
-        args.add(offset);
-        args.add(size);
-        return jdbcTemplate.query(sql.toString(), ITEM_MAPPER, args.toArray());
+        appendFilters(sql, status, keyword);
+        sql.append("ORDER BY iq.created DESC NULLS LAST, iq.iqid DESC " +
+                "OFFSET " + offset + " ROWS FETCH NEXT " + size + " ROWS ONLY");
+        return jdbcTemplate.query(sql.toString(), ITEM_MAPPER);
     }
 
     public int count(String status, String keyword) {
         StringBuilder sql = new StringBuilder(
                 "SELECT COUNT(*) FROM inquiries iq JOIN users u ON iq.user_id = u.user_id WHERE 1=1 ");
-        List<Object> args = new ArrayList<>();
-        appendFilters(sql, args, status, keyword);
-        Integer c = jdbcTemplate.queryForObject(sql.toString(), Integer.class, args.toArray());
+        appendFilters(sql, status, keyword);
+        Integer c = jdbcTemplate.queryForObject(sql.toString(), Integer.class);
         return c == null ? 0 : c;
     }
 
@@ -88,7 +82,7 @@ public class AdminQnaRepository {
                             "FROM inquiries iq " +
                             "JOIN users u      ON iq.user_id = u.user_id " +
                             "LEFT JOIN users a ON iq.answered_by = a.user_id " +
-                            "WHERE iq.iqid = ?",
+                            "WHERE iq.iqid = " + iqid,
                     (rs, n) -> {
                         QnaDetail d = new QnaDetail();
                         d.setIqid(rs.getLong("iqid"));
@@ -105,7 +99,7 @@ public class AdminQnaRepository {
                         d.setCreatedAt(toDate(rs.getTimestamp("created")));
                         d.setStatus(toStatus(answeredAt));
                         return d;
-                    }, iqid);
+                    });
         } catch (EmptyResultDataAccessException e) {
             return null;
         }
@@ -114,23 +108,22 @@ public class AdminQnaRepository {
     // ---------------- 상태 확인 ----------------
     public boolean exists(long iqid) {
         Integer c = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM inquiries WHERE iqid = ?", Integer.class, iqid);
+                "SELECT COUNT(*) FROM inquiries WHERE iqid = " + iqid, Integer.class);
         return c != null && c > 0;
     }
 
     public boolean isAnswered(long iqid) {
         Integer c = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM inquiries WHERE iqid = ? AND answered_at IS NOT NULL",
-                Integer.class, iqid);
+                "SELECT COUNT(*) FROM inquiries WHERE iqid = " + iqid + " AND answered_at IS NOT NULL",
+                Integer.class);
         return c != null && c > 0;
     }
 
     // ---------------- 답변 등록/수정 ----------------
-    /** POST·PUT 공통: 답변 본문 + 답변자(관리자) + 답변일시 기록 */
+    /** [V-SQLI/V-XSS] POST·PUT 공통: answer 문자열 연결 → 저장형 SQLi/XSS */
     public void saveAnswer(long iqid, String answer, long adminUid) {
         jdbcTemplate.update(
-                "UPDATE inquiries SET answer = ?, answered_by = ?, answered_at = SYSTIMESTAMP, updated = SYSTIMESTAMP " +
-                        "WHERE iqid = ?",
-                answer, adminUid, iqid);
+                "UPDATE inquiries SET answer = '" + answer + "', answered_by = " + adminUid + ", " +
+                        "answered_at = SYSTIMESTAMP, updated = SYSTIMESTAMP WHERE iqid = " + iqid);
     }
 }

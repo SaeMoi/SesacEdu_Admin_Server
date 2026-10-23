@@ -17,14 +17,17 @@ import org.springframework.web.server.ResponseStatusException;
 
 import javax.servlet.http.HttpServletRequest;
 import java.util.Map;
-import java.util.Set;
 
+/*
+ * ===================== [취약 진단용 - admin/users] JWT·필수값검증 유지 =====================
+ *  (V-IMPROPER-INPUT/A04) status 화이트리스트(active/restricted) 검증 제거 → 임의 문자열 허용.
+ *       status 필수(누락 400) 체크는 유지. Repository 로 전달되어 SQLi/저장형 XSS 로 이어짐.
+ * ==========================================================================================
+ */
 @Tag(name = "관리자 - 회원 관리")
 @RestController
 @RequestMapping("/admin/users")
 public class AdminUserController {
-
-    private static final Set<String> ALLOWED_STATUS = Set.of("active", "restricted");
 
     private final AdminUserService service;
     private final JwtUtil jwtUtil;
@@ -80,10 +83,10 @@ public class AdminUserController {
     }
 
     // ---------------- 상태 변경 ----------------
-    @Operation(summary = "회원 상태 변경", description = "회원 상태를 active / restricted 로 변경한다. reason 은 저장하지 않음.")
+    @Operation(summary = "회원 상태 변경", description = "회원 상태를 변경한다. reason 은 저장하지 않음.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "변경 성공"),
-            @ApiResponse(responseCode = "400", description = "status 누락/잘못됨"),
+            @ApiResponse(responseCode = "400", description = "status 누락"),
             @ApiResponse(responseCode = "401", description = "인증 실패"),
             @ApiResponse(responseCode = "403", description = "권한 없음"),
             @ApiResponse(responseCode = "404", description = "회원 정보 없음"),
@@ -96,14 +99,13 @@ public class AdminUserController {
             HttpServletRequest request) {
         requireAdmin(request);
 
+        // [필수값 유지] status 누락 시 400
         String status = req == null ? null : req.getStatus();
         if (status == null || status.isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "status 값이 필요합니다.");
         }
         status = status.trim();
-        if (!ALLOWED_STATUS.contains(status)) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "status 는 active 또는 restricted 여야 합니다.");
-        }
+        // [V-IMPROPER-INPUT] 화이트리스트(active/restricted) 검증 제거 → 임의 문자열 그대로 전달
         try {
             service.updateStatus(userId, status);
         } catch (AdminUserService.NotFound e) {
