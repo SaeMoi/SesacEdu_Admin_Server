@@ -7,13 +7,13 @@ import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 
 import java.sql.Timestamp;
-import java.util.ArrayList;
 import java.util.List;
 
-/**
- * 관리자 강의 관리 JDBC. (lectures 테이블)
- *   삭제는 소프트 삭제 — status='deleted' 로 변경.
- *   목록은 삭제건(deleted)을 항상 제외한다.
+/*
+ * ===================== [취약 진단용 - admin/lecture] JWT·필수값검증 유지 =====================
+ *  (V-SQLI/A03) status·keyword(강의명)·offset/size·lid 바인딩 제거 → 문자열 연결
+ *  삭제건(deleted) 항상 제외 로직은 유지(흐름 불변).
+ * ===========================================================================================
  */
 @Repository
 public class AdminLectureRepository {
@@ -30,19 +30,16 @@ public class AdminLectureRepository {
         return ts == null ? null : ts.toLocalDateTime().toLocalDate().toString();
     }
 
-    // status + keyword(강의명 단어별 부분검색) 필터 공통
-    //   삭제건(deleted)은 항상 제외. status 값이 있으면 그 상태만(단, deleted는 무시).
-    private static void appendFilters(StringBuilder sql, List<Object> args, String status, String keyword) {
+    // [V-SQLI] status/keyword 문자열 직접 연결 (삭제건 제외 로직은 유지)
+    private static void appendFilters(StringBuilder sql, String status, String keyword) {
         sql.append("AND l.status <> '" + DELETED + "' ");                 // 삭제건 항상 제외
         if (status != null && !status.isBlank() && !DELETED.equals(status.trim())) {
-            sql.append("AND l.status = ? ");
-            args.add(status.trim());
+            sql.append("AND l.status = '" + status.trim() + "' ");
         }
         if (keyword != null && !keyword.isBlank()) {
             for (String token : keyword.trim().split("\\s+")) {
                 if (token.isEmpty()) continue;
-                sql.append("AND LOWER(l.name) LIKE '%' || LOWER(?) || '%' ");
-                args.add(token);
+                sql.append("AND LOWER(l.name) LIKE LOWER('%" + token + "%') ");
             }
         }
     }
@@ -64,20 +61,17 @@ public class AdminLectureRepository {
                 "SELECT l.Lid AS lid, l.name, i.iname AS instructor_name, l.category, " +
                         "       l.Llevel AS llevel, l.Lprice AS lprice, l.status, l.created " +
                         "FROM lectures l JOIN instructors i ON l.user_id = i.user_id WHERE 1=1 ");
-        List<Object> args = new ArrayList<>();
-        appendFilters(sql, args, status, keyword);
-        sql.append("ORDER BY l.created DESC NULLS LAST, l.Lid DESC OFFSET ? ROWS FETCH NEXT ? ROWS ONLY");
-        args.add(offset);
-        args.add(size);
-        return jdbcTemplate.query(sql.toString(), ITEM_MAPPER, args.toArray());
+        appendFilters(sql, status, keyword);
+        sql.append("ORDER BY l.created DESC NULLS LAST, l.Lid DESC " +
+                "OFFSET " + offset + " ROWS FETCH NEXT " + size + " ROWS ONLY");
+        return jdbcTemplate.query(sql.toString(), ITEM_MAPPER);
     }
 
     public int count(String status, String keyword) {
         StringBuilder sql = new StringBuilder(
                 "SELECT COUNT(*) FROM lectures l JOIN instructors i ON l.user_id = i.user_id WHERE 1=1 ");
-        List<Object> args = new ArrayList<>();
-        appendFilters(sql, args, status, keyword);
-        Integer c = jdbcTemplate.queryForObject(sql.toString(), Integer.class, args.toArray());
+        appendFilters(sql, status, keyword);
+        Integer c = jdbcTemplate.queryForObject(sql.toString(), Integer.class);
         return c == null ? 0 : c;
     }
 
@@ -86,16 +80,15 @@ public class AdminLectureRepository {
     public String findStatus(long lid) {
         try {
             return jdbcTemplate.queryForObject(
-                    "SELECT status FROM lectures WHERE Lid = ?", String.class, lid);
+                    "SELECT status FROM lectures WHERE Lid = " + lid, String.class);
         } catch (EmptyResultDataAccessException e) {
             return null;
         }
     }
 
-    /** 소프트 삭제: status='deleted' 로 변경 */
+    /** [V-SQLI] 소프트 삭제: lid 문자열 연결 */
     public void softDelete(long lid) {
         jdbcTemplate.update(
-                "UPDATE lectures SET status = '" + DELETED + "', updated = SYSTIMESTAMP WHERE Lid = ?",
-                lid);
+                "UPDATE lectures SET status = '" + DELETED + "', updated = SYSTIMESTAMP WHERE Lid = " + lid);
     }
 }

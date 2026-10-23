@@ -9,14 +9,13 @@ import org.springframework.jdbc.core.RowMapper;
 import org.springframework.stereotype.Repository;
 
 import java.sql.Timestamp;
-import java.util.ArrayList;
 import java.util.List;
 
-/**
- * 관리자 강사 신청 JDBC. (확정 DDL 기준)
- *   목록/카운트: instructors 단독 (이름·검색 모두 공개 강사명 iname 기준)
- *   상세: instructors JOIN users (이메일용)
- *   상태(status)는 컬럼이 없고 approved_at / rejected_at 로 파생.
+/*
+ * ===================== [취약 진단용 - admin/instructor] JWT·필수값검증 유지 =====================
+ *  (V-SQLI/A03) keyword(iname 검색)·offset/size·userId·reject_reason 바인딩 제거 → 문자열 연결
+ *  (V-XSS/A03)  reject_reason 미살균 저장 → 조회 시 그대로 반환되어 저장형 XSS
+ * ===============================================================================================
  */
 @Repository
 public class AdminInstructorRepository {
@@ -42,14 +41,13 @@ public class AdminInstructorRepository {
         return ts == null ? null : ts.toLocalDateTime().toLocalDate().toString();
     }
 
-    // status 필터(리터럴) + keyword 필터(바인드) — 검색은 공개 강사명(iname)
-    private static void appendFilters(StringBuilder sql, List<Object> args, String status, String keyword) {
+    // [V-SQLI] status 리터럴 + keyword 문자열 연결(iname 검색)
+    private static void appendFilters(StringBuilder sql, String status, String keyword) {
         if ("approved".equals(status))      sql.append("AND i.approved_at IS NOT NULL ");
         else if ("pending".equals(status))  sql.append("AND i.approved_at IS NULL AND i.rejected_at IS NULL ");
         else if ("rejected".equals(status)) sql.append("AND i.rejected_at IS NOT NULL ");
         if (keyword != null && !keyword.isBlank()) {
-            sql.append("AND LOWER(i.iname) LIKE '%' || LOWER(?) || '%' ");
-            args.add(keyword.trim());
+            sql.append("AND LOWER(i.iname) LIKE LOWER('%" + keyword.trim() + "%') ");
         }
     }
 
@@ -66,19 +64,15 @@ public class AdminInstructorRepository {
         StringBuilder sql = new StringBuilder(
                 "SELECT i.user_id, i.iname, i.field, i.applied_at, i.approved_at, i.rejected_at " +
                         "FROM instructors i WHERE 1=1 ");
-        List<Object> args = new ArrayList<>();
-        appendFilters(sql, args, status, keyword);
-        sql.append("ORDER BY i.applied_at DESC OFFSET ? ROWS FETCH NEXT ? ROWS ONLY");
-        args.add(offset);
-        args.add(size);
-        return jdbcTemplate.query(sql.toString(), ITEM_MAPPER, args.toArray());
+        appendFilters(sql, status, keyword);
+        sql.append("ORDER BY i.applied_at DESC OFFSET " + offset + " ROWS FETCH NEXT " + size + " ROWS ONLY");
+        return jdbcTemplate.query(sql.toString(), ITEM_MAPPER);
     }
 
     public int count(String status, String keyword) {
         StringBuilder sql = new StringBuilder("SELECT COUNT(*) FROM instructors i WHERE 1=1 ");
-        List<Object> args = new ArrayList<>();
-        appendFilters(sql, args, status, keyword);
-        Integer c = jdbcTemplate.queryForObject(sql.toString(), Integer.class, args.toArray());
+        appendFilters(sql, status, keyword);
+        Integer c = jdbcTemplate.queryForObject(sql.toString(), Integer.class);
         return c == null ? 0 : c;
     }
 
@@ -88,7 +82,7 @@ public class AdminInstructorRepository {
             return jdbcTemplate.queryForObject(
                     "SELECT i.user_id, i.iname, u.mail AS email, i.bio, i.career, i.field, " +
                             "       i.career_filename, i.career_file, i.approved_at, i.rejected_at, i.applied_at " +
-                            "FROM instructors i JOIN users u ON i.user_id = u.user_id WHERE i.user_id = ?",
+                            "FROM instructors i JOIN users u ON i.user_id = u.user_id WHERE i.user_id = " + userId,
                     (rs, n) -> {
                         InstructorApplicationDetail d = new InstructorApplicationDetail();
                         d.setUserId(rs.getLong("user_id"));
@@ -103,7 +97,7 @@ public class AdminInstructorRepository {
                         d.setStatus(toStatus(rs.getTimestamp("approved_at"), rs.getTimestamp("rejected_at")));
                         d.setAppliedAt(toDate(rs.getTimestamp("applied_at")));
                         return d;
-                    }, userId);
+                    });
         } catch (EmptyResultDataAccessException e) {
             return null;
         }
@@ -112,15 +106,15 @@ public class AdminInstructorRepository {
     // ---------------- 상태 확인 ----------------
     public boolean exists(long userId) {
         Integer c = jdbcTemplate.queryForObject(
-                "SELECT COUNT(*) FROM instructors WHERE user_id = ?", Integer.class, userId);
+                "SELECT COUNT(*) FROM instructors WHERE user_id = " + userId, Integer.class);
         return c != null && c > 0;
     }
 
     public boolean isProcessed(long userId) {
         Integer c = jdbcTemplate.queryForObject(
                 "SELECT COUNT(*) FROM instructors " +
-                        "WHERE user_id = ? AND (approved_at IS NOT NULL OR rejected_at IS NOT NULL)",
-                Integer.class, userId);
+                        "WHERE user_id = " + userId + " AND (approved_at IS NOT NULL OR rejected_at IS NOT NULL)",
+                Integer.class);
         return c != null && c > 0;
     }
 
@@ -128,21 +122,17 @@ public class AdminInstructorRepository {
     /** 승인: instructors.approved_at 기록 + users.auth = 2(강사) */
     public void approve(long userId) {
         jdbcTemplate.update(
-                "UPDATE instructors SET approved_at = SYSTIMESTAMP, updated = SYSTIMESTAMP WHERE user_id = ?",
-                userId);
+                "UPDATE instructors SET approved_at = SYSTIMESTAMP, updated = SYSTIMESTAMP WHERE user_id = " + userId);
         jdbcTemplate.update(
-                "UPDATE users SET auth = 2, updated = SYSTIMESTAMP WHERE user_id = ?",
-                userId);
+                "UPDATE users SET auth = 2, updated = SYSTIMESTAMP WHERE user_id = " + userId);
     }
 
-    /** 거절: instructors.rejected_at + reject_reason 기록 (auth는 변경하지 않음) */
+    /** [V-SQLI/V-XSS] 거절: reject_reason 문자열 연결 → 저장형 SQLi/XSS. auth=1 로 되돌림. */
     public void reject(long userId, String reason) {
         jdbcTemplate.update(
-                "UPDATE instructors SET rejected_at = SYSTIMESTAMP, reject_reason = ?, updated = SYSTIMESTAMP " +
-                        "WHERE user_id = ?",
-                reason, userId);
+                "UPDATE instructors SET rejected_at = SYSTIMESTAMP, reject_reason = '" + reason + "', " +
+                        "updated = SYSTIMESTAMP WHERE user_id = " + userId);
         jdbcTemplate.update(
-                "UPDATE users SET auth = 1, updated = SYSTIMESTAMP WHERE user_id = ?",
-                userId);
+                "UPDATE users SET auth = 1, updated = SYSTIMESTAMP WHERE user_id = " + userId);
     }
 }

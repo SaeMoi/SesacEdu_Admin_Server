@@ -18,6 +18,12 @@ import org.springframework.web.server.ResponseStatusException;
 import javax.servlet.http.HttpServletRequest;
 import java.util.Map;
 
+/*
+ * ===================== [취약 진단용 - admin/instructor] JWT·필수값검증 유지 =====================
+ *  (V-IMPROPER-INPUT/A04) 반려 사유 길이(≤500자) 검증 제거 → 과도한 길이 허용.
+ *       반려 사유 필수(누락 400) 체크는 유지. Repository 로 전달되어 SQLi/저장형 XSS 로 이어짐.
+ * ==============================================================================================
+ */
 @Tag(name = "관리자 - 강사 신청")
 @RestController
 @RequestMapping("/admin/instructors")
@@ -107,7 +113,7 @@ public class AdminInstructorController {
     @Operation(summary = "강사 신청 거절", description = "반려 사유와 함께 거절 처리한다.")
     @ApiResponses({
             @ApiResponse(responseCode = "200", description = "거절 성공"),
-            @ApiResponse(responseCode = "400", description = "반려 사유 누락/500자 초과"),
+            @ApiResponse(responseCode = "400", description = "반려 사유 누락"),
             @ApiResponse(responseCode = "401", description = "인증 실패"),
             @ApiResponse(responseCode = "403", description = "권한 없음"),
             @ApiResponse(responseCode = "404", description = "신청 정보 없음"),
@@ -121,13 +127,12 @@ public class AdminInstructorController {
             HttpServletRequest request) {
         requireAdmin(request);
 
+        // [필수값 유지] 반려 사유 누락 시 400
         String reason = req.getReason();
         if (reason == null || reason.isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "반려 사유가 필요합니다.");
         }
-        if (reason.length() > 500) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "반려 사유는 500자 이내여야 합니다.");
-        }
+        // [V-IMPROPER-INPUT] 길이 제한(≤500자) 검증 제거 → 과도한 길이 그대로 전달
         try {
             service.reject(userId, reason);
         } catch (AdminInstructorService.NotFound e) {
